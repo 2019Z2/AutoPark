@@ -1,0 +1,50 @@
+// הגדרת הפינים לפי הסכמה החשמלית הבלעדית של הרובוט שלך (U1 -> U4 L293D)
+const int motor1Pin1 = 2; // מחובר ל-1A ב-L293D (רגל 2)
+const int motor1Pin2 = 3; // מחובר ל-2A ב-L293D (רגל 7)
+
+const int motor2Pin1 = 4; // מחובר ל-3A ב-L293D (רגל 10)
+const int motor2Pin2 = 5; // מחובר ל-4A ב-L293D (רגל 15)
+
+void setup() {
+  // הגדרת הפינים כפיני יציאה
+  pinMode(motor1Pin1, OUTPUT);
+  pinMode(motor1Pin2, OUTPUT);
+  pinMode(motor2Pin1, OUTPUT);
+  pinMode(motor2Pin2, OUTPUT);
+}
+
+void loop() {
+  // נסיעה קדימה למשך 2 שניות
+  moveForward();
+  delay(2000);
+  
+  // נסיעה אחורה למשך 2 שניות
+  moveBackward();
+  delay(2000);
+}
+
+// פונקציה לנסיעה קדימה
+void moveForward() {
+  digitalWrite(motor1Pin1, HIGH);
+  digitalWrite(motor1Pin2, LOW);
+  
+  digitalWrite(motor2Pin1, LOW);
+  digitalWrite(motor2Pin2, HIGH);
+}
+
+// פונקציה לנסיעה אחורה (תוקנה הקוטביות)
+void moveBackward() {
+  digitalWrite(motor1Pin1, LOW);
+  digitalWrite(motor1Pin2, HIGH);
+  
+  digitalWrite(motor2Pin1, HIGH);
+  digitalWrite(motor2Pin2, LOW);
+}
+
+// פונקציה לעצירת הרובוט
+void stopRobot() {
+  digitalWrite(motor1Pin1, LOW);
+  digitalWrite(motor1Pin2, LOW);
+  digitalWrite(motor2Pin1, LOW);
+  digitalWrite(motor2Pin2, LOW);
+}
