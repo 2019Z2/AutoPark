@@ -1,0 +1,58 @@
+// הגדרת החיבורים לפי הפינים המדויקים שלך בארדואינו
+const int motor1Pin1 = 2; // מחובר לרגל 2 ב-L293D (Input 1)
+const int motor1Pin2 = 3; // מחובר לרגל 7 ב-L293D (Input 2)
+
+const int motor2Pin1 = 4; // מחובר לרגל 10 ב-L293D (Input 3)
+const int motor2Pin2 = 5; // מחובר לרגל 15 ב-L293D (Input 4)
+
+void setup() {
+  // הגדרת הרגליים כיוצאות (OUTPUT)
+  pinMode(motor1Pin1, OUTPUT);
+  pinMode(motor1Pin2, OUTPUT);
+  pinMode(motor2Pin1, OUTPUT);
+  pinMode(motor2Pin2, OUTPUT);
+}
+
+void loop() {
+  // נסיעה קדימה למשך 2 שניות
+  moveForward();
+  delay(2000);
+  
+  // עצירה לשנייה אחת
+  stopRobot();
+  delay(1000);
+  
+  // נסיעה אחורה למשך 2 שניות
+  moveBackward();
+  delay(2000);
+  
+  // עצירה סופית
+  stopRobot();
+  while(1); // עוצר את פעולת הלולאה כאן
+}
+
+// פונקציה לנסיעה קדימה
+void moveForward() {
+  digitalWrite(motor1Pin1, HIGH);
+  digitalWrite(motor1Pin2, LOW);
+  
+  digitalWrite(motor2Pin1, HIGH);
+  digitalWrite(motor2Pin2, LOW);
+}
+
+// פונקציה לנסיעה אחורה
+void moveBackward() {
+  digitalWrite(motor1Pin1, LOW);
+  digitalWrite(motor1Pin2, HIGH);
+  
+  digitalWrite(motor2Pin1, LOW);
+  digitalWrite(motor2Pin2, HIGH);
+}
+
+// פונקציה לעצירת הרובוט
+void stopRobot() {
+  digitalWrite(motor1Pin1, LOW);
+  digitalWrite(motor1Pin2, LOW);
+  digitalWrite(motor2Pin1, LOW);
+  digitalWrite(motor2Pin2, LOW);
+}
