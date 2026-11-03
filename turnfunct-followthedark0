@@ -1,0 +1,97 @@
+#define m0 2  // כיוון מנוע ימין
+#define m1 3  //~ PWM מנוע ימין
+#define m2 4  // כיוון מנוע שמאל
+#define m3 5  //~ PWM מנוע שמאל
+
+const int IR1_PIN = A0; // חיישן ימני קיצוני
+const int IR2_PIN = A1; // חיישן מרכזי-ימני
+const int IR3_PIN = A2; // חיישן מרכזי-שמאלי
+const int IR4_PIN = A3; // חיישן שמאלי קיצוני
+
+const int THRESHOLD = 500; 
+
+// הגדרות מהירות מעודכנות לפנייה חדה יותר
+const int SPEED_STRAIGHT  = 130; // מהירות נסיעה ישר
+const int SPEED_TURN_HIGH = 160; // גלגל חיצוני מהיר יותר
+const int SPEED_TURN_LOW  = 0;   // גלגל פנימי עצור (אפשר גם ערך שלילי כמו 60- לפנייה חדה במיוחד)
+
+void setup() {
+  Serial.begin(9600);
+
+  pinMode(m0, OUTPUT);
+  pinMode(m1, OUTPUT);
+  pinMode(m2, OUTPUT);
+  pinMode(m3, OUTPUT);
+
+  pinMode(IR1_PIN, INPUT);
+  pinMode(IR2_PIN, INPUT);
+  pinMode(IR3_PIN, INPUT);
+  pinMode(IR4_PIN, INPUT);
+}
+
+void loop() {
+  bool b4 = analogRead(IR4_PIN) > THRESHOLD; // שמאל קיצוני
+  bool b3 = analogRead(IR3_PIN) > THRESHOLD; // שמאל מרכזי
+  bool b2 = analogRead(IR2_PIN) > THRESHOLD; // ימין מרכזי
+  bool b1 = analogRead(IR1_PIN) > THRESHOLD; // ימין קיצוני
+
+  int state = (b4 << 3) | (b3 << 2) | (b2 << 1) | b1;
+
+  switch (state) {
+    // --- נסיעה ישר ---
+    case 0b0110: 
+    case 0b0100: 
+    case 0b0010: 
+      motor_2(SPEED_STRAIGHT, SPEED_STRAIGHT);
+      break;
+
+    // --- הפס בצד ימין (פנייה חדה) ---
+    case 0b0001: 
+    case 0b0011: 
+      motor_2(SPEED_TURN_HIGH, SPEED_TURN_LOW);
+      break;
+
+    // --- הפס בצד שמאל (פנייה חדה) ---
+    case 0b1000: 
+      motor_2(SPEED_TURN_HIGH, SPEED_TURN_LOW);
+      break;
+
+    case 0b1100: 
+    case 0b1110: 
+      motor_2(SPEED_TURN_LOW, SPEED_TURN_HIGH);
+      break;
+
+    // --- עצירה ---
+    case 0b0000: 
+    default:
+      motor_2(0, 0);
+      break;
+    
+    case 0b0111:
+      motor_2(SPEED_TURN_HIGH, SPEED_TURN_LOW);
+      delay(1500);//turnleftfunct
+      break;
+  }
+
+  delay(10);
+}
+
+void motor_2(int right, int left) {
+  // מנוע ימין
+  if (right >= 0) {
+    analogWrite(m1, right);
+    digitalWrite(m0, 0);
+  } else {
+    analogWrite(m1, abs(right));
+    digitalWrite(m0, 1);
+  }
+
+  // מנוע שמאל
+  if (left >= 0) {
+    analogWrite(m3, left);
+    digitalWrite(m2, 0);
+  } else {
+    analogWrite(m3, abs(left));
+    digitalWrite(m2, 1);
+  }
+}
