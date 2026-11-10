@@ -3,17 +3,17 @@
 #define m2 4  // כיוון מנוע שמאל
 #define m3 5  //~ PWM מנוע שמאל
 
-const int IR1_PIN = A0; // חיישן ימני קיצוני
-const int IR2_PIN = A1; // חיישן מרכזי-ימני
-const int IR3_PIN = A2; // חיישן מרכזי-שמאלי
-const int IR4_PIN = A3; // חיישן שמאלי קיצוני
+const int IR1_PIN = A0; // חיישן ימני קיצוני (b1)
+const int IR2_PIN = A1; // חיישן מרכזי-ימני (b2)
+const int IR3_PIN = A2; // חיישן מרכזי-שמאלי (b3)
+const int IR4_PIN = A3; // חיישן שמאלי קיצוני (b4)
 
 const int THRESHOLD = 500; 
 
-// הגדרות מהירות מעודכנות לפנייה חדה יותר
-const int SPEED_STRAIGHT  = 130; // מהירות נסיעה ישר
-const int SPEED_TURN_HIGH = 160; // גלגל חיצוני מהיר יותר
-const int SPEED_TURN_LOW  = 0;   // גלגל פנימי עצור (אפשר גם ערך שלילי כמו 60- לפנייה חדה במיוחד)
+// הגדרות מהירות
+const int SPEED_STRAIGHT  = 90;  // מהירות נסיעה ישר
+const int SPEED_TURN_HIGH = 120; // גלגל חיצוני מהיר
+const int SPEED_TURN_LOW  = 0;   // גלגל פנימי עצור
 
 void setup() {
   Serial.begin(9600);
@@ -30,10 +30,10 @@ void setup() {
 }
 
 void loop() {
-  bool b4 = analogRead(IR4_PIN) > THRESHOLD; // שמאל קיצוני
-  bool b3 = analogRead(IR3_PIN) > THRESHOLD; // שמאל מרכזי
-  bool b2 = analogRead(IR2_PIN) > THRESHOLD; // ימין מרכזי
-  bool b1 = analogRead(IR1_PIN) > THRESHOLD; // ימין קיצוני
+  bool b4 = analogRead(IR4_PIN) > THRESHOLD; // שמאל קיצוני (Bit 3)
+  bool b3 = analogRead(IR3_PIN) > THRESHOLD; // שמאל מרכזי (Bit 2)
+  bool b2 = analogRead(IR2_PIN) > THRESHOLD; // ימין מרכזי (Bit 1)
+  bool b1 = analogRead(IR1_PIN) > THRESHOLD; // ימין קיצוני (Bit 0)
 
   int state = (b4 << 3) | (b3 << 2) | (b2 << 1) | b1;
 
@@ -45,31 +45,29 @@ void loop() {
       motor_2(SPEED_STRAIGHT, SPEED_STRAIGHT);
       break;
 
-    // --- הפס בצד ימין (פנייה חדה) ---
+    // --- הפס בצד ימין (פנייה ימינה) ---
     case 0b0001: 
     case 0b0011: 
-      motor_2(SPEED_TURN_HIGH, SPEED_TURN_LOW);
+    case 0b0111: 
+      motor_2(SPEED_TURN_LOW, SPEED_TURN_HIGH); // פנייה ימינה
       break;
 
-    // --- הפס בצד שמאל (פנייה חדה) ---
+    // --- הפס בצד שמאל (פנייה שמאלה רגילה) ---
     case 0b1000: 
-      motor_2(SPEED_TURN_HIGH, SPEED_TURN_LOW);
+    case 0b1100: 
+      motor_2(SPEED_TURN_HIGH, SPEED_TURN_LOW); // פנייה שמאלה
       break;
 
-    case 0b1100: 
+    // --- 3 חיישנים בצד שמאל (פנייה שמאלה עם השהייה) ---
     case 0b1110: 
-      motor_2(SPEED_TURN_LOW, SPEED_TURN_HIGH);
+      motor_2(SPEED_TURN_HIGH, SPEED_TURN_LOW); // מנוע ימין מהיר, מנוע שמאל איטי -> פנייה שמאלה
+      delay(1500);
       break;
 
     // --- עצירה ---
     case 0b0000: 
     default:
       motor_2(0, 0);
-      break;
-    
-    case 0b0111:
-      motor_2(SPEED_TURN_HIGH, SPEED_TURN_LOW);
-      delay(1500);//turnleftfunct
       break;
   }
 
