@@ -1,0 +1,263 @@
+#define m0 2  // כיוון מנוע ימין
+#define m1 3  //~ PWM מנוע ימין
+#define m2 4  // כיוון מנוע שמאל
+#define m3 5  //~ PWM מנוע שמאל
+
+const int IR1_PIN = A0; // שמאל קיצוני
+const int IR2_PIN = A1; // שמאל אמצעי
+const int IR3_PIN = A2; // ימין אמצעי
+const int IR4_PIN = A3; // ימין קיצוני
+
+const int THRESHOLD = 500;
+
+// --- הגדרות בחירת חניה ---
+// 1 = חניה ראשונה מימין | 2 = חניה שנייה מימין | 3 = חניה שלישית (בקצה המסלול ישר)
+const int TARGET_SPOT = 3;
+
+// --- הגדרות מהירות וזמנים (לכיול על המסלול) ---
+const int SPEED_STRAIGHT        = 50;   // מהירות נסיעה ישר
+const int SPEED_TURN_HIGH       = 42;   // מהירות גלגל חיצוני בתיקון רגיל
+const int SPEED_TURN_LOW        = 0;    // גלגל פנימי עצור בתיקון רגיל
+const int SPEED_RECOVER_FWD     = 42;   // מהירות גלגל קדמי בהחזרה חדה לפס
+const int SPEED_RECOVER_REV     = 25;   // מהירות גלגל אחורי בהחזרה חדה לפס
+const int SPEED_SLOW_TURN       = 28;   // מהירות סיבוב במקום בפנייה לחניה
+
+const int ALIGN_TIME            = 1500; // זמן נסיעה קדימה כדי שציר הגלגלים יגיע לקו הפנייה
+const int LEAVE_LINE_TIME       = 350;  // זמן סיבוב מינימלי כדי לעזוב את הקו הראשי לפני חיפוש הקו החדש
+const int SKIP_SPOT_TIME        = 350;  // זמן מעבר ישר על פני חניה שלא נבחרה
+const int FIND_LINE_TIMEOUT     = 2000; // זמן מקסימלי לנסיעה ישר בחיפוש הפס של החניה אחרי הפנייה
+const int BAY_ENTRY_IGNORE_TIME = 500;  // זמן התיישרות בכניסה לחניה לפני חיפוש פס העצירה
+
+// מצבי הרובוט
+enum RobotState {
+  SEARCHING, // נוסע על הקו הראשי ומחפש את הפנייה
+  IN_BAY,    // נכנס לחניה ועוקב אחרי הקו עד לפס העצירה
+  PARKED     // חנה ועצר סופית
+};
+
+RobotState currentState = SEARCHING;
+int junctionsPassed = 0;
+unsigned long bayEnterTime = 0;
+
+// זיכרון הצד האחרון שבו נראה הפס: -1 = שמאל, 1 = ימין, 0 = מרכז
+int lastDir = 0;
+
+void setup() {
+  Serial.begin(9600);
+
+  pinMode(m0, OUTPUT);
+  pinMode(m1, OUTPUT);
+  pinMode(m2, OUTPUT);
+  pinMode(m3, OUTPUT);
+
+  pinMode(IR1_PIN, INPUT);
+  pinMode(IR2_PIN, INPUT);
+  pinMode(IR3_PIN, INPUT);
+  pinMode(IR4_PIN, INPUT);
+}
+
+void loop() {
+  // אם הרובוט כבר חנה - נשארים בעצירה מוחלטת
+  if (currentState == PARKED) {
+    motor_2(0, 0);
+    return;
+  }
+
+  int state = readSensors();
+
+  // --- שלב 1: חיפוש הפנייה לחניה ---
+  if (currentState == SEARCHING) {
+    // זיהוי פנייה ימינה (3 חיישנים ימניים או כל ה-4 על שחור)
+    if (state == 0b1110 || state == 0b1111) {
+      junctionsPassed++;
+
+      if (junctionsPassed == TARGET_SPOT) {
+        executeRightTurnToLine();     // 1. פנייה ימינה לכיוון החניה
+        driveStraightToFindLine();    // 2. נסיעה ישר אחרי הפנייה עד ששני האמצעיים תופסים את הפס
+        bayEnterTime = millis();      // 3. שמירת זמן הכניסה לחניה
+        currentState = IN_BAY;        // 4. מעבר למעקב קו בתוך החניה
+      } else {
+        // דילוג על פנייה שלא נבחרה והמשך ישר
+        motor_2(SPEED_STRAIGHT, SPEED_STRAIGHT);
+        delay(SKIP_SPOT_TIME);
+
+        // אם היעד הוא החניה האחרונה (3) וכבר עברנו את שתי הפניות ימינה - ממשיכים ישר עד לפס העצירה
+        if (TARGET_SPOT == 3 && junctionsPassed == 2) {
+          bayEnterTime = millis();
+          currentState = IN_BAY;
+        }
+      }
+      return;
+    }
+  }
+
+  // --- שלב 2: בתוך תא החניה (או בדרך לחניה 3) - זיהוי פס העצירה (T) ---
+  if (currentState == IN_BAY) {
+    // מחפש פס עצירה מלא (כל 4 החיישנים) רק אחרי שעבר זמן ההתיישרות בכניסה
+    if (millis() - bayEnterTime > BAY_ENTRY_IGNORE_TIME) {
+      if (state == 0b1111) {
+        motor_2(0, 0);
+        currentState = PARKED;
+        return;
+      }
+    }
+  }
+
+  // --- מעקב קו + החזרה אוטומטית לפס ---
+  followLine(state);
+  delay(10);
+}
+
+// קריאת מצב 4 החיישנים
+int readSensors() {
+  bool b4 = analogRead(IR4_PIN) > THRESHOLD;
+  bool b3 = analogRead(IR3_PIN) > THRESHOLD;
+  bool b2 = analogRead(IR2_PIN) > THRESHOLD;
+  bool b1 = analogRead(IR1_PIN) > THRESHOLD;
+  return (b4 << 3) | (b3 << 2) | (b2 << 1) | b1;
+}
+
+// ביצוע פנייה ימינה לכיוון החניה
+void executeRightTurnToLine() {
+  // 1. עצירה קצרה לייצוב
+  motor_2(0, 0);
+  delay(200);
+
+  // 2. התקדמות כדי שמרכז הסיבוב (ציר הגלגלים) יהיה מול החניה
+  motor_2(SPEED_STRAIGHT, SPEED_STRAIGHT);
+  delay(ALIGN_TIME);
+
+  // 3. התחלת סיבוב ימינה במקום ויציאה מהקו הראשי
+  motor_2(-SPEED_SLOW_TURN, SPEED_SLOW_TURN);
+  delay(LEAVE_LINE_TIME);
+
+  // 4. המשך סיבוב עד שאחד החיישנים האמצעיים תופס קו (עם הגבלת זמן לסיבוב)
+  unsigned long turnStart = millis();
+  while (millis() - turnStart < 2000) {
+    bool midRight = analogRead(IR3_PIN) > THRESHOLD;
+    bool midLeft  = analogRead(IR2_PIN) > THRESHOLD;
+    if (midRight || midLeft) {
+      break; // הקו זוהה!
+    }
+  }
+
+  // 5. בלימה רגעית למניעת החלקה
+  motor_2(0, 0);
+  delay(150);
+  lastDir = 0; // איפוס זיכרון הכיוון לקראת הכניסה לחניה
+}
+
+// נסיעה ישר אחרי הפנייה עד ששני החיישנים האמצעיים מזהים את הפס של החניה
+void driveStraightToFindLine() {
+  motor_2(SPEED_STRAIGHT, SPEED_STRAIGHT);
+
+  unsigned long searchStart = millis();
+  while (millis() - searchStart < FIND_LINE_TIMEOUT) {
+    int state = readSensors();
+
+    // ברגע ששני החיישנים האמצעיים (IR2 ו-IR3) על הפס - יוצאים וממשיכים למעקב קו
+    if ((state & 0b0110) == 0b0110) {
+      lastDir = 0;
+      break;
+    }
+
+    // שומרים כיוון גיבוי למקרה שחיישן צדדי נגע בפס בדרך
+    if (state & 0b0011) lastDir = -1;
+    if (state & 0b1100) lastDir = 1;
+
+    delay(5);
+  }
+}
+
+// לוגיקת מעקב קו עם זיכרון והחזרה אקטיבית לפס
+void followLine(int state) {
+  switch (state) {
+    // במרכז הפס - נסיעה ישר
+    case 0b0110:
+      lastDir = 0;
+      motor_2(SPEED_STRAIGHT, SPEED_STRAIGHT);
+      break;
+
+    // זיהוי 3 החיישנים השמאליים (IR1, IR2, IR3) - ממשיך ישר לתוך החניה
+    case 0b0111:
+      lastDir = 0;
+      motor_2(SPEED_STRAIGHT, SPEED_STRAIGHT);
+      break;
+
+    // סטייה קלה שמאלה - נסיעה ישר ושמירת זיכרון
+    case 0b0010:
+      lastDir = -1;
+      motor_2(SPEED_STRAIGHT, SPEED_STRAIGHT);
+      break;
+
+    // סטייה קלה ימינה - נסיעה ישר ושמירת זיכרון
+    case 0b0100:
+      lastDir = 1;
+      motor_2(SPEED_STRAIGHT, SPEED_STRAIGHT);
+      break;
+
+    // תיקון בינוני שמאלה
+    case 0b0011:
+    case 0b1011:
+      lastDir = -1;
+      motor_2(SPEED_TURN_HIGH, SPEED_TURN_LOW);
+      break;
+
+    // תיקון חד שמאלה (רק החיישן השמאלי הקיצוני על הפס) - סיבוב עם שני הגלגלים
+    case 0b0001:
+      lastDir = -1;
+      motor_2(SPEED_RECOVER_FWD, -SPEED_RECOVER_REV);
+      break;
+
+    // תיקון בינוני ימינה
+    case 0b1100:
+    case 0b1110:
+    case 0b1101:
+      lastDir = 1;
+      motor_2(SPEED_TURN_LOW, SPEED_TURN_HIGH);
+      break;
+
+    // תיקון חד ימינה (רק החיישן הימני הקיצוני על הפס) - סיבוב עם שני הגלגלים
+    case 0b1000:
+      lastDir = 1;
+      motor_2(-SPEED_RECOVER_REV, SPEED_RECOVER_FWD);
+      break;
+
+    // הפס ברח לגמרי מהחיישנים - מחזירים את הרובוט לפי הכיוון האחרון שנראה
+    case 0b0000:
+      if (lastDir == -1) {
+        motor_2(SPEED_RECOVER_FWD, -SPEED_RECOVER_REV); // מסתובב שמאלה לחפש את הפס
+      } else if (lastDir == 1) {
+        motor_2(-SPEED_RECOVER_REV, SPEED_RECOVER_FWD); // מסתובב ימינה לחפש את הפס
+      } else if (currentState == IN_BAY) {
+        motor_2(SPEED_STRAIGHT, SPEED_STRAIGHT);        // בתוך החניה ממשיך ישר אם טרם נגע בפס
+      } else {
+        motor_2(0, 0);
+      }
+      break;
+
+    default:
+      motor_2(SPEED_STRAIGHT, SPEED_STRAIGHT);
+      break;
+  }
+}
+
+void motor_2(int right, int left) {
+  // מנוע ימין
+  if (right >= 0) {
+    analogWrite(m1, right);
+    digitalWrite(m0, 0);
+  } else {
+    analogWrite(m1, abs(right));
+    digitalWrite(m0, 1);
+  }
+
+  // מנוע שמאל
+  if (left >= 0) {
+    analogWrite(m3, left);
+    digitalWrite(m2, 0);
+  } else {
+    analogWrite(m3, abs(left));
+    digitalWrite(m2, 1);
+  }
+}
