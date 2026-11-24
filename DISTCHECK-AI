@@ -1,0 +1,63 @@
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+
+const int trigPin = 9;
+const int echoPin = 8;
+
+void setup() {
+  Serial.begin(9600);
+  
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println(F("SSD1306 allocation failed"));
+    for (;;);
+  }
+
+  display.clearDisplay();
+  display.setTextColor(WHITE);
+}
+
+void loop() {
+  // שליחת פולס מחיישן המרחק
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+
+  // חישוב המרחק בסנטימטרים
+  long duration = pulseIn(echoPin, HIGH);
+  float distance = duration * 0.034 / 2;
+
+  // הכנת מסך ה-OLED לתצוגה
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setCursor(0, 10);
+  display.println("Distance:");
+  display.setTextSize(2);
+  display.setCursor(0, 30);
+
+  // שליחה במקביל גם לסיריאל וגם למסך
+  if (distance > 400 || distance <= 0) {
+    Serial.println("Out of range");
+    display.println("Out of range");
+  } else {
+    Serial.print("Distance: ");
+    Serial.print(distance, 1);
+    Serial.println(" cm");
+
+    display.print(distance, 1);
+    display.println(" cm");
+  }
+
+  display.display();
+  delay(250);
+}
