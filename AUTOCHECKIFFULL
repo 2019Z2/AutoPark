@@ -1,0 +1,346 @@
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SH110X.h>
+
+// --- הגדרות מסך OLED (SH1106) ---
+#define i2c_Address 0x3C
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+Adafruit_SH1106G display = Adafruit_SH1106G(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// --- הגדרות חיישן מרחק HC-SR04 ---
+const int trigPin = 9;
+const int echoPin = 10;
+const float MIN_FREE_DISTANCE = 25.0; // מרחק מינימלי בס"מ כדי שהחניה תיחשב פנויה
+
+// --- הגדרות מנועים ---
+#define m0 2  // כיוון מנוע ימין
+#define m1 3  //~ PWM מנוע ימין
+#define m2 4  // כיוון מנוע שמאל
+#define m3 5  //~ PWM מנוע שמאל
+
+// --- הגדרות חיישני קו (IR) ---
+const int IR1_PIN = A0; // שמאל קיצוני
+const int IR2_PIN = A1; // שמאל אמצעי
+const int IR3_PIN = A2; // ימין אמצעי
+const int IR4_PIN = A3; // ימין קיצוני
+const int THRESHOLD = 500;
+
+// --- הגדרות מהירות וזמנים ---
+const int SPEED_STRAIGHT        = 50;   // מהירות נסיעה ישר
+const int SPEED_TURN_HIGH       = 42;   // מהירות גלגל חיצוני בתיקון רגיל
+const int SPEED_TURN_LOW        = 0;    // גלגל פנימי עצור בתיקון רגיל
+const int SPEED_RECOVER_FWD     = 42;   // מהירות גלגל קדמי בהחזרה חדה לפס
+const int SPEED_RECOVER_REV     = 25;   // מהירות גלגל אחורי בהחזרה חדה לפס
+const int SPEED_SLOW_TURN       = 28;   // מהירות סיבוב במקום בפנייה לחניה
+
+const int SCAN_ALIGN_TIME       = 1000; // זמן התקדמות קדימה כדי למקם את חיישן המרחק מול פתח החניה
+const int TURN_ALIGN_TIME       = 300;  // השלמת התקדמות קדימה לפני הסיבוב (יחד עם SCAN = 1300)
+const int LEAVE_LINE_TIME       = 350;  // זמן סיבוב מינימלי כדי לעזוב את הקו הראשי
+const int SKIP_SPOT_TIME        = 150;  // המשך נסיעה קצר אחרי דילוג על חניה תפוסה
+const int FIND_LINE_TIMEOUT     = 2000; // זמן מקסימלי לנסיעה ישר בחיפוש הפס של החניה
+const int BAY_ENTRY_IGNORE_TIME = 500;  // זמן התיישרות בכניסה לחניה לפני חיפוש פס העצירה
+
+// מצבי הרובוט
+enum RobotState {
+  SEARCHING, // נוסע על הקו הראשי ובודק חניות
+  IN_BAY,    // נכנס לחניה ועוקב אחרי הקו עד לפס העצירה
+  PARKED     // חנה ועצר סופית
+};
+
+RobotState currentState = SEARCHING;
+int junctionsPassed = 0;
+unsigned long bayEnterTime = 0;
+int lastDir = 0; // -1 = שמאל, 1 = ימין, 0 = מרכז
+
+void setup() {
+  Serial.begin(9600);
+
+  pinMode(m0, OUTPUT);
+  pinMode(m1, OUTPUT);
+  pinMode(m2, OUTPUT);
+  pinMode(m3, OUTPUT);
+
+  pinMode(IR1_PIN, INPUT);
+  pinMode(IR2_PIN, INPUT);
+  pinMode(IR3_PIN, INPUT);
+  pinMode(IR4_PIN, INPUT);
+
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+
+  delay(250);
+  display.begin(i2c_Address, true);
+  display.clearDisplay();
+  display.setTextColor(SH110X_WHITE);
+  display.setTextSize(1);
+  display.setCursor(0, 20);
+  display.println(F("System Ready"));
+  display.setCursor(0, 35);
+  display.println(F("Searching spot..."));
+  display.display();
+}
+
+void loop() {
+  if (currentState == PARKED) {
+    motor_2(0, 0);
+    return;
+  }
+
+  int state = readSensors();
+
+  // --- שלב 1: הגעה לחניה ובדיקה האם היא פנויה ---
+  if (currentState == SEARCHING) {
+    if (state == 0b1110 || state == 0b1111) {
+      junctionsPassed++;
+
+      // 1. התקדמות קדימה כדי שחיישן המרחק יהיה בדיוק מול פתח החניה
+      motor_2(SPEED_STRAIGHT, SPEED_STRAIGHT);
+      delay(SCAN_ALIGN_TIME);
+
+      // 2. עצירה מוחלטת לייצוב הרובוט
+      motor_2(0, 0);
+      delay(350);
+
+      // 3. מדידת מרחק והצגה על המסך
+      float distance = getDistanceCm();
+      showSpotStatus(junctionsPassed, distance);
+      delay(350);
+
+      // 4. קבלת החלטה: כניסה או דילוג
+      if (distance > MIN_FREE_DISTANCE) {
+        executeRightTurnToLine();
+        driveStraightToFindLine();
+        bayEnterTime = millis();
+        currentState = IN_BAY;
+      } else {
+        // החניה תפוסה - ממשיכים ישר
+        motor_2(SPEED_STRAIGHT, SPEED_STRAIGHT);
+        delay(SKIP_SPOT_TIME);
+
+        if (junctionsPassed == 2) {
+          display.clearDisplay();
+          display.setTextSize(1);
+          display.setCursor(0, 25);
+          display.println(F("Going to Spot 3..."));
+          display.display();
+
+          bayEnterTime = millis();
+          currentState = IN_BAY;
+        }
+      }
+      return;
+    }
+  }
+
+  // --- שלב 2: בתוך תא החניה - זיהוי פס העצירה (T) ---
+  if (currentState == IN_BAY) {
+    if (millis() - bayEnterTime > BAY_ENTRY_IGNORE_TIME) {
+      if (state == 0b1111) {
+        motor_2(0, 0);
+        currentState = PARKED;
+
+        display.clearDisplay();
+        display.setTextSize(2);
+        display.setCursor(15, 25);
+        display.println(F("PARKED!"));
+        display.display();
+        return;
+      }
+    }
+  }
+
+  // --- מעקב קו רגיל ---
+  followLine(state);
+  delay(10);
+}
+
+// פונקציית מדידת מרחק אמינה (חציון של 3 קריאות)
+float getDistanceCm() {
+  float readings[3];
+  for (int i = 0; i < 3; i++) {
+    digitalWrite(trigPin, LOW);
+    delayMicroseconds(2);
+    digitalWrite(trigPin, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(trigPin, LOW);
+
+    long duration = pulseIn(echoPin, HIGH, 25000);
+    readings[i] = (duration == 0) ? 999.0 : (duration * 0.034 / 2.0);
+    delay(15);
+  }
+
+  if (readings[0] > readings[1]) { float t = readings[0]; readings[0] = readings[1]; readings[1] = t; }
+  if (readings[1] > readings[2]) { float t = readings[1]; readings[1] = readings[2]; readings[2] = t; }
+  if (readings[0] > readings[1]) { float t = readings[0]; readings[0] = readings[1]; readings[1] = t; }
+
+  return readings[1];
+}
+
+// הצגת סטטוס החניה והמרחק על מסך ה-OLED
+void showSpotStatus(int spotNum, float dist) {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setCursor(0, 5);
+  display.print(F("Spot #"));
+  display.print(spotNum);
+
+  display.setCursor(0, 22);
+  display.print(F("Dist: "));
+  if (dist >= 900) {
+    display.println(F("Clear"));
+  } else {
+    display.print(dist, 1);
+    display.println(F(" cm"));
+  }
+
+  display.setTextSize(2);
+  display.setCursor(0, 42);
+  if (dist > MIN_FREE_DISTANCE) {
+    display.println(F("FREE"));
+  } else {
+    display.println(F("OCCUPIED"));
+  }
+  display.display();
+
+  Serial.print(F("Spot "));
+  Serial.print(spotNum);
+  Serial.print(F(" Dist: "));
+  Serial.println(dist);
+}
+
+// קריאת מצב 4 חיישני הקו
+int readSensors() {
+  bool b4 = analogRead(IR4_PIN) > THRESHOLD;
+  bool b3 = analogRead(IR3_PIN) > THRESHOLD;
+  bool b2 = analogRead(IR2_PIN) > THRESHOLD;
+  bool b1 = analogRead(IR1_PIN) > THRESHOLD;
+  return (b4 << 3) | (b3 << 2) | (b2 << 1) | b1;
+}
+
+// ביצוע פנייה ימינה לכיוון החניה
+void executeRightTurnToLine() {
+  // השלמת התקדמות קצרה כדי שציר הגלגלים יהיה מול מרכז החניה
+  motor_2(SPEED_STRAIGHT, SPEED_STRAIGHT);
+  delay(TURN_ALIGN_TIME);
+
+  // התחלת סיבוב ימינה ויציאה מהקו הראשי
+  motor_2(-SPEED_SLOW_TURN, SPEED_SLOW_TURN);
+  delay(LEAVE_LINE_TIME);
+
+  unsigned long turnStart = millis();
+  while (millis() - turnStart < 2000) {
+    bool midRight = analogRead(IR3_PIN) > THRESHOLD;
+    bool midLeft  = analogRead(IR2_PIN) > THRESHOLD;
+    if (midRight || midLeft) {
+      break;
+    }
+  }
+
+  motor_2(0, 0);
+  delay(150);
+  lastDir = 0;
+}
+
+// נסיעה ישר אחרי הפנייה עד ששני החיישנים האמצעיים מזהים את הפס של החניה
+void driveStraightToFindLine() {
+  motor_2(SPEED_STRAIGHT, SPEED_STRAIGHT);
+
+  unsigned long searchStart = millis();
+  while (millis() - searchStart < FIND_LINE_TIMEOUT) {
+    int state = readSensors();
+
+    if ((state & 0b0110) == 0b0110) {
+      lastDir = 0;
+      break;
+    }
+
+    if (state & 0b0011) lastDir = -1;
+    if (state & 0b1100) lastDir = 1;
+
+    delay(5);
+  }
+}
+
+// לוגיקת מעקב קו עם זיכרון והחזרה אקטיבית לפס
+void followLine(int state) {
+  switch (state) {
+    case 0b0110:
+      lastDir = 0;
+      motor_2(SPEED_STRAIGHT, SPEED_STRAIGHT);
+      break;
+
+    case 0b0111:
+      lastDir = 0;
+      motor_2(SPEED_STRAIGHT, SPEED_STRAIGHT);
+      break;
+
+    case 0b0010:
+      lastDir = -1;
+      motor_2(SPEED_STRAIGHT, SPEED_STRAIGHT);
+      break;
+
+    case 0b0100:
+      lastDir = 1;
+      motor_2(SPEED_STRAIGHT, SPEED_STRAIGHT);
+      break;
+
+    case 0b0011:
+    case 0b1011:
+      lastDir = -1;
+      motor_2(SPEED_TURN_HIGH, SPEED_TURN_LOW);
+      break;
+
+    case 0b0001:
+      lastDir = -1;
+      motor_2(SPEED_RECOVER_FWD, -SPEED_RECOVER_REV);
+      break;
+
+    case 0b1100:
+    case 0b1110:
+    case 0b1101:
+      lastDir = 1;
+      motor_2(SPEED_TURN_LOW, SPEED_TURN_HIGH);
+      break;
+
+    case 0b1000:
+      lastDir = 1;
+      motor_2(-SPEED_RECOVER_REV, SPEED_RECOVER_FWD);
+      break;
+
+    case 0b0000:
+      if (lastDir == -1) {
+        motor_2(SPEED_RECOVER_FWD, -SPEED_RECOVER_REV);
+      } else if (lastDir == 1) {
+        motor_2(-SPEED_RECOVER_REV, SPEED_RECOVER_FWD);
+      } else if (currentState == IN_BAY) {
+        motor_2(SPEED_STRAIGHT, SPEED_STRAIGHT);
+      } else {
+        motor_2(0, 0);
+      }
+      break;
+
+    default:
+      motor_2(SPEED_STRAIGHT, SPEED_STRAIGHT);
+      break;
+  }
+}
+
+void motor_2(int right, int left) {
+  if (right >= 0) {
+    analogWrite(m1, right);
+    digitalWrite(m0, 0);
+  } else {
+    analogWrite(m1, abs(right));
+    digitalWrite(m0, 1);
+  }
+
+  if (left >= 0) {
+    analogWrite(m3, left);
+    digitalWrite(m2, 0);
+  } else {
+    analogWrite(m3, abs(left));
+    digitalWrite(m2, 1);
+  }
+}
